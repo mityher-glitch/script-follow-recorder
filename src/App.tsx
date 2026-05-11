@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import mammoth from "mammoth";
 import "./App.css";
 
 type LineStatus = "none" | "done" | "redo" | "verified" | "skipped";
@@ -56,10 +57,6 @@ export default function App() {
   const [recordContextMode, setRecordContextMode] =
     useState<RecordContextMode>("script");
   const [fontSize, setFontSize] = useState(30);
-  const [searchText, setSearchText] = useState("");
-  const [showToolbar, setShowToolbar] = useState(true);
-  const [highContrast, setHighContrast] = useState(false);
-  const [showRedoList, setShowRedoList] = useState(false);
 
   const lineRefs = useRef<(HTMLDivElement | null)[]>([]);
 
@@ -71,63 +68,36 @@ export default function App() {
     [lines]
   );
 
-  const scenes = useMemo(
-    () =>
-      lines
-        .map((line, index) => ({ ...line, index }))
-        .filter((line) => line.isScene),
-    [lines]
-  );
+  async function importFile(file: File) {
+    const fileName = file.name.toLowerCase();
 
-  const filteredLines = useMemo(() => {
-    if (!searchText.trim()) return lines.map((line, index) => ({ line, index }));
+    try {
+      let text = "";
 
-    return lines
-      .map((line, index) => ({ line, index }))
-      .filter(({ line }) =>
-        line.text.toLowerCase().includes(searchText.toLowerCase())
-      );
-  }, [lines, searchText]);
+      if (fileName.endsWith(".txt")) {
+        text = await file.text();
+      } else if (fileName.endsWith(".docx")) {
+        const arrayBuffer = await file.arrayBuffer();
 
-  const speakerStats = useMemo(() => {
-    return speakers.map((speaker) => {
-      const speakerLines = lines.filter((line) => line.speaker === speaker);
-      const done = speakerLines.filter(
-        (line) => line.status === "done" || line.status === "verified"
-      ).length;
-      const redo = speakerLines.filter((line) => line.status === "redo").length;
+        const result = await mammoth.extractRawText({
+          arrayBuffer,
+        });
 
-      return {
-        speaker,
-        total: speakerLines.length,
-        done,
-        redo,
-      };
-    });
-  }, [lines, speakers]);
+        text = result.value;
+      } else {
+        alert("目前只支援 .txt 與 .docx 檔案");
+        return;
+      }
 
-  const totalDialogueLines = lines.filter((line) => line.speaker).length;
-  const totalDoneLines = lines.filter(
-    (line) =>
-      line.speaker && (line.status === "done" || line.status === "verified")
-  ).length;
-
-  const redoLines = lines
-    .map((line, index) => ({ line, index }))
-    .filter(({ line }) => line.status === "redo");
-
-  function importText(file: File) {
-    const reader = new FileReader();
-
-    reader.onload = () => {
-      const text = String(reader.result || "");
       const parsed = parseScript(text);
+
       setLines(parsed);
       setCurrentIndex(0);
       setSelectedSpeaker("全部角色");
-    };
-
-    reader.readAsText(file);
+    } catch (error) {
+      console.error(error);
+      alert("檔案讀取失敗");
+    }
   }
 
   function findNextIndex(start: number) {
@@ -158,7 +128,10 @@ export default function App() {
     return start;
   }
 
-  function findSpeakerRelativeIndex(start: number, direction: "prev" | "next") {
+  function findSpeakerRelativeIndex(
+    start: number,
+    direction: "prev" | "next"
+  ) {
     const speaker = lines[start]?.speaker;
 
     if (!speaker) return undefined;
@@ -179,10 +152,12 @@ export default function App() {
   }
 
   const currentLine = lines[currentIndex];
+
   const prevLine =
     recordContextMode === "speaker"
       ? findSpeakerRelativeIndex(currentIndex, "prev")
       : lines[currentIndex - 1];
+
   const nextLine =
     recordContextMode === "speaker"
       ? findSpeakerRelativeIndex(currentIndex, "next")
@@ -204,12 +179,6 @@ export default function App() {
     );
   }
 
-  function updateNote(index: number, note: string) {
-    setLines((prev) =>
-      prev.map((line, i) => (i === index ? { ...line, note } : line))
-    );
-  }
-
   function decreaseFontSize() {
     setFontSize((prev) => Math.max(prev - 2, 20));
   }
@@ -218,97 +187,28 @@ export default function App() {
     setFontSize((prev) => Math.min(prev + 2, 56));
   }
 
-  function jumpTo(index: number) {
-    setCurrentIndex(index);
-    setSearchText("");
-  }
-
-  function toggleFullscreen() {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen();
-    } else {
-      document.exitFullscreen();
-    }
-  }
-
-  function downloadText(filename: string, content: string) {
-    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-
-    a.href = url;
-    a.download = filename;
-    a.click();
-
-    URL.revokeObjectURL(url);
-  }
-
-  function exportRedoList() {
-    const content = redoLines
-      .map(
-        ({ line, index }) =>
-          `${index + 1}. [${line.speaker || "無角色"}] ${line.text}${
-            line.note ? `\n備註：${line.note}` : ""
-          }`
-      )
-      .join("\n\n");
-
-    downloadText("重錄清單.txt", content || "目前沒有重錄台詞。");
-  }
-
-  function exportSpeakerLines() {
-    const target =
-      selectedSpeaker === "全部角色" ? "全部角色" : selectedSpeaker;
-
-    const content = lines
-      .filter((line) =>
-        selectedSpeaker === "全部角色" ? line.speaker : line.speaker === target
-      )
-      .map((line, index) => {
-        return `${index + 1}. [${line.speaker}] [${statusLabel(
-          line.status
-        )}] ${line.text}${line.note ? `\n備註：${line.note}` : ""}`;
-      })
-      .join("\n\n");
-
-    downloadText(`${target}-台詞表.txt`, content || "沒有可匯出的台詞。");
-  }
-
-  function exportStatusList() {
-    const content = lines
-      .map((line, index) => {
-        return `${index + 1}. [${line.speaker || "無角色"}] [${statusLabel(
-          line.status
-        )}] ${line.text}${line.note ? `\n備註：${line.note}` : ""}`;
-      })
-      .join("\n\n");
-
-    downloadText("全部錄製狀態.txt", content || "沒有內容。");
-  }
-
   useEffect(() => {
-    const saved = localStorage.getItem("script-follow-recorder-v2");
+    const saved = localStorage.getItem("script-follow-recorder");
 
     if (saved) {
       try {
         const data = JSON.parse(saved);
+
         setLines(data.lines || []);
         setCurrentIndex(data.currentIndex || 0);
         setSelectedSpeaker(data.selectedSpeaker || "全部角色");
         setRecordingMode(data.recordingMode || false);
         setRecordContextMode(data.recordContextMode || "script");
         setFontSize(data.fontSize || 30);
-        setShowToolbar(data.showToolbar ?? true);
-        setHighContrast(data.highContrast || false);
       } catch {
-        localStorage.removeItem("script-follow-recorder-v2");
+        localStorage.removeItem("script-follow-recorder");
       }
     }
   }, []);
 
   useEffect(() => {
     localStorage.setItem(
-      "script-follow-recorder-v2",
+      "script-follow-recorder",
       JSON.stringify({
         lines,
         currentIndex,
@@ -316,8 +216,6 @@ export default function App() {
         recordingMode,
         recordContextMode,
         fontSize,
-        showToolbar,
-        highContrast,
       })
     );
   }, [
@@ -327,8 +225,6 @@ export default function App() {
     recordingMode,
     recordContextMode,
     fontSize,
-    showToolbar,
-    highContrast,
   ]);
 
   useEffect(() => {
@@ -366,11 +262,6 @@ export default function App() {
         markStatus("redo");
       }
 
-      if (e.key.toLowerCase() === "c") {
-        e.preventDefault();
-        markStatus("none");
-      }
-
       if (e.key.toLowerCase() === "v") {
         e.preventDefault();
         markStatus("verified");
@@ -381,14 +272,14 @@ export default function App() {
         markStatus("skipped");
       }
 
+      if (e.key.toLowerCase() === "c") {
+        e.preventDefault();
+        markStatus("none");
+      }
+
       if (e.key.toLowerCase() === "m") {
         e.preventDefault();
         setRecordingMode((prev) => !prev);
-      }
-
-      if (e.key.toLowerCase() === "h") {
-        e.preventDefault();
-        setShowToolbar((prev) => !prev);
       }
 
       if (e.key === "-") {
@@ -403,200 +294,109 @@ export default function App() {
     }
 
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentIndex, lines, selectedSpeaker, recordingMode]);
 
-  function renderRecordLine(
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [currentIndex, lines, selectedSpeaker]);
+
+  function renderLine(
     line: ScriptLine | undefined,
     type: "prev" | "current" | "next"
   ) {
     if (!line) {
-      return <div className={`record-line ${type} empty-line`}>沒有台詞</div>;
+      return <div className={`record-line ${type}`}>沒有台詞</div>;
     }
 
     return (
       <div className={`record-line ${type} ${line.status}`}>
-        {line.speaker && <span className="speaker">{line.speaker}</span>}
+        {line.speaker && (
+          <span className="speaker">{line.speaker}</span>
+        )}
+
         <span>{line.text}</span>
-        {line.note && <div className="note">備註：{line.note}</div>}
       </div>
     );
   }
 
   return (
-    <div className={["app", highContrast ? "high-contrast" : ""].join(" ")}>
-      {showToolbar && (
-        <>
-          <header className="topbar">
-            <h1>錄音劇本跟讀器 v2</h1>
+    <div className="app">
+      <header className="topbar">
+        <h1>錄音劇本跟讀器</h1>
 
-            <input
-              type="file"
-              accept=".txt"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) importText(file);
-              }}
-            />
-          </header>
+        <input
+          type="file"
+          accept=".txt,.docx"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
 
-          <div className="toolbar">
-            <label>錄製角色：</label>
+            if (file) {
+              importFile(file);
+            }
+          }}
+        />
+      </header>
 
-            <select
-              value={selectedSpeaker}
-              onChange={(e) => setSelectedSpeaker(e.target.value)}
-            >
-              <option value="全部角色">全部角色</option>
+      <div className="toolbar">
+        <label>錄製角色：</label>
 
-              {speakers.map((speaker) => (
-                <option key={speaker} value={speaker}>
-                  {speaker}
-                </option>
-              ))}
-            </select>
+        <select
+          value={selectedSpeaker}
+          onChange={(e) => setSelectedSpeaker(e.target.value)}
+        >
+          <option value="全部角色">全部角色</option>
 
-            <button onClick={() => setRecordingMode((prev) => !prev)}>
-              {recordingMode ? "完整劇本模式" : "錄音模式"}
-            </button>
+          {speakers.map((speaker) => (
+            <option key={speaker} value={speaker}>
+              {speaker}
+            </option>
+          ))}
+        </select>
 
-            <button
-              onClick={() =>
-                setRecordContextMode((prev) =>
-                  prev === "script" ? "speaker" : "script"
-                )
-              }
-            >
-              {recordContextMode === "script" ? "前後文模式" : "同角色模式"}
-            </button>
-
-            <button onClick={decreaseFontSize}>A-</button>
-            <button onClick={increaseFontSize}>A+</button>
-            <button onClick={() => setHighContrast((prev) => !prev)}>
-              高對比
-            </button>
-            <button onClick={toggleFullscreen}>全螢幕</button>
-            <button onClick={() => setShowToolbar(false)}>隱藏工具列</button>
-          </div>
-
-          <div className="toolbar secondary">
-            <input
-              className="search"
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-              placeholder="搜尋台詞 / 關鍵字 / 角色名"
-            />
-
-            <select
-              onChange={(e) => {
-                const value = e.target.value;
-                if (value !== "") jumpTo(Number(value));
-              }}
-              value=""
-            >
-              <option value="">場景跳轉</option>
-              {scenes.map((scene) => (
-                <option key={scene.index} value={scene.index}>
-                  {scene.text}
-                </option>
-              ))}
-            </select>
-
-            <button onClick={() => setShowRedoList((prev) => !prev)}>
-              {showRedoList ? "關閉重錄清單" : "重錄清單"}
-            </button>
-
-            <button onClick={exportRedoList}>匯出重錄</button>
-            <button onClick={exportSpeakerLines}>匯出角色台詞</button>
-            <button onClick={exportStatusList}>匯出全部狀態</button>
-          </div>
-
-          <div className="stats">
-            <strong>整體進度：</strong>
-            {totalDoneLines} / {totalDialogueLines}
-            {speakerStats.map((stat) => (
-              <span key={stat.speaker}>
-                {stat.speaker}：{stat.done}/{stat.total}，重錄 {stat.redo}
-              </span>
-            ))}
-          </div>
-
-          <div className="help">
-          <div className="privacy-notice">
-  <strong>隱私說明：</strong>
-  本工具不會上傳劇本文本。所有劇本、錄製狀態與備註僅儲存在您的瀏覽器本機。
-  <br />
-  <strong>提醒：</strong>
-  若清除瀏覽器資料、使用無痕模式或更換裝置，進度可能消失，請自行保留原始劇本備份。
-</div>
-            Enter / ↓：下一句　↑：上一句　F：已錄　R：重錄　V：已確認　X：棄用　C：清除　M：切換模式　H：隱藏工具列　- / +：字體
-          </div>
-        </>
-      )}
-
-      {!showToolbar && (
-        <button className="floating-button" onClick={() => setShowToolbar(true)}>
-          顯示工具列
+        <button onClick={() => setRecordingMode((prev) => !prev)}>
+          {recordingMode ? "完整模式" : "錄音模式"}
         </button>
-      )}
 
-      {showRedoList && showToolbar && (
-        <aside className="redo-panel">
-          <h2>重錄清單</h2>
+        <button
+          onClick={() =>
+            setRecordContextMode((prev) =>
+              prev === "script" ? "speaker" : "script"
+            )
+          }
+        >
+          {recordContextMode === "script"
+            ? "前後文模式"
+            : "同角色模式"}
+        </button>
 
-          {redoLines.length === 0 && <p>目前沒有標記重錄的台詞。</p>}
+        <button onClick={decreaseFontSize}>A-</button>
+        <button onClick={increaseFontSize}>A+</button>
+      </div>
 
-          {redoLines.map(({ line, index }) => (
-            <div
-              key={line.id}
-              className="redo-item"
-              onClick={() => jumpTo(index)}
-            >
-              <strong>{index + 1}. {line.speaker || "無角色"}</strong>
-              <p>{line.text}</p>
-              {line.note && <small>備註：{line.note}</small>}
-            </div>
-          ))}
-        </aside>
-      )}
+      <div className="help">
+        Enter / ↓：下一句　↑：上一句　F：已錄　R：重錄　
+        V：已確認　X：棄用　C：清除　M：切換模式
+      </div>
 
-      {searchText.trim() && showToolbar && (
-        <aside className="search-panel">
-          <h2>搜尋結果</h2>
-
-          {filteredLines.length === 0 && <p>沒有找到結果。</p>}
-
-          {filteredLines.slice(0, 30).map(({ line, index }) => (
-            <div
-              key={line.id}
-              className="search-item"
-              onClick={() => jumpTo(index)}
-            >
-              <strong>{index + 1}. {line.speaker || "無角色"}</strong>
-              <p>{line.text}</p>
-            </div>
-          ))}
-        </aside>
-      )}
+      <div className="privacy-notice">
+        <strong>隱私說明：</strong>
+        本工具不會上傳劇本文本。所有劇本、錄製狀態與備註僅儲存在您的瀏覽器本機。
+        <br />
+        <strong>提醒：</strong>
+        若清除瀏覽器資料、使用無痕模式或更換裝置，進度可能消失，請自行保留原始劇本備份。
+      </div>
 
       {recordingMode ? (
-        <main className="recording-view" style={{ fontSize }}>
-          {lines.length === 0 ? (
-            <div className="empty">請先匯入 .txt 劇本</div>
-          ) : (
-            <>
-              {renderRecordLine(prevLine, "prev")}
-              {renderRecordLine(currentLine, "current")}
-              {renderRecordLine(nextLine, "next")}
-            </>
-          )}
+        <main
+          className="recording-view"
+          style={{ fontSize }}
+        >
+          {renderLine(prevLine, "prev")}
+          {renderLine(currentLine, "current")}
+          {renderLine(nextLine, "next")}
         </main>
       ) : (
         <main className="script">
-          {lines.length === 0 && (
-            <div className="empty">請先匯入 .txt 劇本</div>
-          )}
-
           {lines.map((line, index) => (
             <div
               key={line.id}
@@ -608,7 +408,6 @@ export default function App() {
                 "line",
                 index === currentIndex ? "current" : "",
                 line.status,
-                line.isScene ? "scene" : "",
                 selectedSpeaker !== "全部角色" &&
                 line.speaker !== selectedSpeaker
                   ? "dimmed"
@@ -616,21 +415,11 @@ export default function App() {
               ].join(" ")}
               onClick={() => setCurrentIndex(index)}
             >
-              <div>
-                {line.speaker && <span className="speaker">{line.speaker}</span>}
-                <span>{line.text}</span>
-              </div>
+              {line.speaker && (
+                <span className="speaker">{line.speaker}</span>
+              )}
 
-              <div className="line-meta">
-                <span>{statusLabel(line.status)}</span>
-
-                <input
-                  value={line.note || ""}
-                  onChange={(e) => updateNote(index, e.target.value)}
-                  placeholder="備註"
-                  onClick={(e) => e.stopPropagation()}
-                />
-              </div>
+              <span>{line.text}</span>
             </div>
           ))}
         </main>
