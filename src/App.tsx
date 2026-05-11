@@ -10,7 +10,7 @@ type ScriptBlock = {
   id: number;
   raw: string;
   lines: string[];
-  type: "chapter" | "content" | "cue" | "spacer";
+  type: "chapter" | "content" | "cue";
   speaker?: string;
   status: LineStatus;
   note: string;
@@ -29,6 +29,10 @@ function statusLabel(status: LineStatus) {
     default:
       return "未標記";
   }
+}
+
+function normalizeSearchText(value: string) {
+  return value.toLowerCase().replace(/\s+/g, "").replace(/　+/g, "");
 }
 
 function isChapter(line: string) {
@@ -73,8 +77,8 @@ function normalizeText(text: string) {
     .replace(/\t+/g, "\n")
     .replace(/　+/g, " ")
     .replace(/[ ]{3,}/g, "  ")
-    .replace(/(se[+>|<])/gi, "\n$1 ")
-    .replace(/(bg[+>|<])/gi, "\n$1 ")
+    .replace(/(^|\n)\s*(se[+>|<])\s*/gi, "\n$2 ")
+    .replace(/(^|\n)\s*(bg[+>|<])\s*/gi, "\n$2 ")
     .replace(
       /(第[０-９0-9一二三四五六七八九十百]+[－\-]?[０-９0-9一二三四五六七八九十百]*章)/g,
       "\n$1\n"
@@ -121,7 +125,6 @@ function parseScript(text: string): ScriptBlock[] {
 
     if (isChapter(trimmed)) {
       flushBuffer();
-
       blocks.push({
         id: id++,
         raw: trimmed,
@@ -130,7 +133,6 @@ function parseScript(text: string): ScriptBlock[] {
         status: "none",
         note: "",
       });
-
       continue;
     }
 
@@ -147,13 +149,11 @@ function parseScript(text: string): ScriptBlock[] {
   }
 
   flushBuffer();
-
   return blocks;
 }
 
 function highlightLine(line: string) {
   const trimmed = line.trim();
-
   const commandMatch = trimmed.match(/^(se[+>|<]|bg[+>|<])\s*(.*)$/i);
 
   if (commandMatch) {
@@ -162,7 +162,7 @@ function highlightLine(line: string) {
 
     return (
       <>
-        <span className={`cue-tag ${command.startsWith("bg") ? "bg" : "se"}`}>
+        <span className={`cue-tag ${command.toLowerCase().startsWith("bg") ? "bg" : "se"}`}>
           {command}
         </span>
         <span className="cue-text">{text}</span>
@@ -170,23 +170,18 @@ function highlightLine(line: string) {
     );
   }
 
-  if (isPauseLine(trimmed)) {
-    return <span className="pause-text">{trimmed}</span>;
-  }
+  if (isPauseLine(trimmed)) return <span className="pause-text">{trimmed}</span>;
 
   if (/^（＊.*）$/.test(trimmed) || /^\(＊.*\)$/.test(trimmed)) {
     return <span className="performance-text">{trimmed}</span>;
   }
 
-  if (isBracketOnly(trimmed)) {
-    return <span className="hint-text">{trimmed}</span>;
-  }
+  if (isBracketOnly(trimmed)) return <span className="hint-text">{trimmed}</span>;
 
   const speaker = getSpeaker(trimmed);
 
   if (speaker) {
     const content = trimmed.replace(/^([^：:［\[\(（]{1,12})[：:]/, "");
-
     return (
       <>
         <span className="speaker">{speaker}</span>
@@ -244,11 +239,16 @@ export default function App() {
 
   const searchResults = blocks
     .map((block, index) => ({ block, index }))
-    .filter(({ block }) =>
-      searchText.trim()
-        ? block.raw.toLowerCase().includes(searchText.toLowerCase())
-        : false
-    )
+    .filter(({ block }) => {
+      const keyword = normalizeSearchText(searchText);
+      if (!keyword) return false;
+
+      const target = normalizeSearchText(
+        [block.raw, block.lines.join(""), block.speaker || "", block.note || ""].join("")
+      );
+
+      return target.includes(keyword);
+    })
     .slice(0, 40);
 
   async function importFile(file: File) {
@@ -283,9 +283,7 @@ export default function App() {
 
   function isTargetBlock(block: ScriptBlock) {
     if (block.type !== "content") return false;
-
     if (selectedSpeaker === "全部角色") return true;
-
     return block.speaker === selectedSpeaker;
   }
 
@@ -293,7 +291,6 @@ export default function App() {
     for (let i = start + 1; i < blocks.length; i++) {
       if (isTargetBlock(blocks[i])) return i;
     }
-
     return start;
   }
 
@@ -301,7 +298,6 @@ export default function App() {
     for (let i = start - 1; i >= 0; i--) {
       if (isTargetBlock(blocks[i])) return i;
     }
-
     return start;
   }
 
@@ -350,11 +346,8 @@ export default function App() {
   }
 
   function toggleFullscreen() {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen();
-    } else {
-      document.exitFullscreen();
-    }
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+    else document.exitFullscreen();
   }
 
   function downloadText(filename: string, content: string) {
@@ -383,9 +376,8 @@ export default function App() {
 
   function exportCueList() {
     const content =
-      postBlocks
-        .map(({ block, index }) => `${index + 1}. ${block.raw}`)
-        .join("\n\n") || "目前沒有音效 cue。";
+      postBlocks.map(({ block, index }) => `${index + 1}. ${block.raw}`).join("\n\n") ||
+      "目前沒有音效 cue。";
 
     downloadText("後製Cue清單.txt", content);
   }
@@ -430,9 +422,7 @@ export default function App() {
         .map((block, index) => ({ block, index }))
         .filter(({ block }) => block.speaker === speaker);
 
-      const currentPosition = sameSpeakerIndexes.findIndex(
-        ({ index }) => index === currentIndex
-      );
+      const currentPosition = sameSpeakerIndexes.findIndex(({ index }) => index === currentIndex);
 
       return {
         prev: currentPosition > 0 ? sameSpeakerIndexes[currentPosition - 1].block : undefined,
@@ -459,7 +449,6 @@ export default function App() {
     if (saved) {
       try {
         const data = JSON.parse(saved);
-
         setBlocks(data.blocks || []);
         setCurrentIndex(data.currentIndex || 0);
         setViewMode(data.viewMode || "manuscript");
@@ -514,6 +503,16 @@ export default function App() {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement;
+
+      if (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT"
+      ) {
+        return;
+      }
+
       if (e.key === "ArrowDown" || e.key === "Enter") {
         e.preventDefault();
         goNext();
@@ -576,7 +575,6 @@ export default function App() {
     }
 
     window.addEventListener("keydown", handleKeyDown);
-
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [blocks, currentIndex, viewMode, selectedSpeaker]);
 
@@ -597,9 +595,7 @@ export default function App() {
   }
 
   function renderRecordingCard(block: ScriptBlock | undefined, role: "prev" | "current" | "next") {
-    if (!block) {
-      return <div className={`record-card ${role} empty-card`}>沒有內容</div>;
-    }
+    if (!block) return <div className={`record-card ${role} empty-card`}>沒有內容</div>;
 
     return (
       <div className={`record-card ${role} ${block.status}`}>
@@ -635,10 +631,7 @@ export default function App() {
             <button onClick={() => setViewMode("post")}>後製模式</button>
 
             <label>角色</label>
-            <select
-              value={selectedSpeaker}
-              onChange={(e) => setSelectedSpeaker(e.target.value)}
-            >
+            <select value={selectedSpeaker} onChange={(e) => setSelectedSpeaker(e.target.value)}>
               <option value="全部角色">全部角色</option>
               {speakers.map((speaker) => (
                 <option key={speaker} value={speaker}>
@@ -648,9 +641,7 @@ export default function App() {
             </select>
 
             <button
-              onClick={() =>
-                setContextMode((prev) => (prev === "script" ? "speaker" : "script"))
-              }
+              onClick={() => setContextMode((prev) => (prev === "script" ? "speaker" : "script"))}
             >
               {contextMode === "script" ? "前後文模式" : "同角色模式"}
             </button>
