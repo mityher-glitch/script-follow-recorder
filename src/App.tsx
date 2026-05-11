@@ -522,6 +522,13 @@ export default function App() {
           </div>
 
           <div className="help">
+          <div className="privacy-notice">
+  <strong>隱私說明：</strong>
+  本工具不會上傳劇本文本。所有劇本、錄製狀態與備註僅儲存在您的瀏覽器本機。
+  <br />
+  <strong>提醒：</strong>
+  若清除瀏覽器資料、使用無痕模式或更換裝置，進度可能消失，請自行保留原始劇本備份。
+</div>
             Enter / ↓：下一句　↑：上一句　F：已錄　R：重錄　V：已確認　X：棄用　C：清除　M：切換模式　H：隱藏工具列　- / +：字體
           </div>
         </>
