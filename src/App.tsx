@@ -3,130 +3,18 @@ import mammoth from "mammoth";
 import "./App.css";
 
 type LineStatus = "none" | "done" | "redo" | "verified" | "skipped";
-type LineType =
-  | "chapter"
-  | "dialogue"
-  | "se"
-  | "bg"
-  | "pause"
-  | "performance"
-  | "position"
-  | "cue";
+type ViewMode = "manuscript" | "recording" | "post";
+type ContextMode = "script" | "speaker";
 
-type ViewMode = "full" | "recording" | "post";
-
-type ScriptLine = {
+type ScriptBlock = {
   id: number;
   raw: string;
-  text: string;
-  type: LineType;
-  command?: string;
+  lines: string[];
+  type: "chapter" | "content" | "cue" | "spacer";
   speaker?: string;
   status: LineStatus;
   note: string;
 };
-
-function normalizeText(text: string) {
-  return text
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .replace(/\t+/g, "\n")
-    .replace(/　+/g, " ")
-    .replace(/[ ]{2,}/g, " ")
-    .replace(/(se[+>|<])/gi, "\n$1 ")
-    .replace(/(bg[+>|<])/gi, "\n$1 ")
-    .replace(/(第[０-９0-9一二三四五六七八九十百]+[－\-]?[０-９0-9一二三四五六七八九十百]*章)/g, "\n$1\n")
-    .replace(/(（停頓[０-９0-9一二三四五六七八九十]*秒）)/g, "\n$1\n")
-    .replace(/(\(停頓[０-９0-9一二三四五六七八九十]*秒\))/g, "\n$1\n");
-}
-
-function detectLineType(line: string): {
-  type: LineType;
-  command?: string;
-  text: string;
-  speaker?: string;
-} {
-  const trimmed = line.trim();
-
-  if (/^第[０-９0-9一二三四五六七八九十百]+[－\-]?[０-９0-9一二三四五六七八九十百]*章$/.test(trimmed)) {
-    return { type: "chapter", text: trimmed };
-  }
-
-  const seMatch = trimmed.match(/^(se[+>|<])\s*(.*)$/i);
-  if (seMatch) {
-    return {
-      type: "se",
-      command: seMatch[1],
-      text: seMatch[2] || trimmed,
-    };
-  }
-
-  const bgMatch = trimmed.match(/^(bg[+>|<])\s*(.*)$/i);
-  if (bgMatch) {
-    return {
-      type: "bg",
-      command: bgMatch[1],
-      text: bgMatch[2] || trimmed,
-    };
-  }
-
-  if (/^（停頓.*秒）$/.test(trimmed) || /^\(停頓.*秒\)$/.test(trimmed)) {
-    return { type: "pause", text: trimmed };
-  }
-
-  if (/^（＊.*）$/.test(trimmed) || /^\(＊.*\)$/.test(trimmed)) {
-    return { type: "performance", text: trimmed };
-  }
-
-  if (
-    /^（.*位置.*）$/.test(trimmed) ||
-    /^（.*主角.*）$/.test(trimmed) ||
-    /^（.*左耳.*）$/.test(trimmed) ||
-    /^（.*右耳.*）$/.test(trimmed) ||
-    /^（.*前方.*）$/.test(trimmed) ||
-    /^（.*背後.*）$/.test(trimmed)
-  ) {
-    return { type: "position", text: trimmed };
-  }
-
-  if (/^（.*）$/.test(trimmed) || /^\(.*\)$/.test(trimmed)) {
-    return { type: "cue", text: trimmed };
-  }
-
-  const speakerMatch = trimmed.match(/^([^：:［\[\(（]{1,12})[：:](.+)$/);
-  if (speakerMatch) {
-    return {
-      type: "dialogue",
-      speaker: speakerMatch[1].trim(),
-      text: speakerMatch[2].trim(),
-    };
-  }
-
-  return { type: "dialogue", text: trimmed };
-}
-
-function parseScript(text: string): ScriptLine[] {
-  const normalized = normalizeText(text);
-
-  return normalized
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line, index) => {
-      const detected = detectLineType(line);
-
-      return {
-        id: index,
-        raw: line,
-        text: detected.text,
-        type: detected.type,
-        command: detected.command,
-        speaker: detected.speaker,
-        status: "none",
-        note: "",
-      };
-    });
-}
 
 function statusLabel(status: LineStatus) {
   switch (status) {
@@ -143,55 +31,225 @@ function statusLabel(status: LineStatus) {
   }
 }
 
-function typeLabel(type: LineType) {
-  switch (type) {
-    case "chapter":
-      return "章節";
-    case "dialogue":
-      return "台詞";
-    case "se":
-      return "SE";
-    case "bg":
-      return "BG";
-    case "pause":
-      return "停頓";
-    case "performance":
-      return "演出";
-    case "position":
-      return "位置";
-    case "cue":
-      return "提示";
+function isChapter(line: string) {
+  return /^第[０-９0-9一二三四五六七八九十百]+[－\-]?[０-９0-9一二三四五六七八九十百]*章$/.test(
+    line.trim()
+  );
+}
+
+function isCueLine(line: string) {
+  return /^(se[+>|<]|bg[+>|<])\s*/i.test(line.trim());
+}
+
+function isPauseLine(line: string) {
+  return /^（停頓.*秒）$/.test(line.trim()) || /^\(停頓.*秒\)$/.test(line.trim());
+}
+
+function isBracketOnly(line: string) {
+  return /^（.*）$/.test(line.trim()) || /^\(.*\)$/.test(line.trim());
+}
+
+function getSpeaker(line: string) {
+  const match = line.match(/^([^：:［\[\(（]{1,12})[：:]/);
+  return match ? match[1].trim() : undefined;
+}
+
+function hasDialogue(lines: string[]) {
+  return lines.some((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return false;
+    if (isChapter(trimmed)) return false;
+    if (isCueLine(trimmed)) return false;
+    if (isPauseLine(trimmed)) return false;
+    if (isBracketOnly(trimmed)) return false;
+    return true;
+  });
+}
+
+function normalizeText(text: string) {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\t+/g, "\n")
+    .replace(/　+/g, " ")
+    .replace(/[ ]{3,}/g, "  ")
+    .replace(/(se[+>|<])/gi, "\n$1 ")
+    .replace(/(bg[+>|<])/gi, "\n$1 ")
+    .replace(
+      /(第[０-９0-9一二三四五六七八九十百]+[－\-]?[０-９0-9一二三四五六七八九十百]*章)/g,
+      "\n$1\n"
+    );
+}
+
+function parseScript(text: string): ScriptBlock[] {
+  const normalized = normalizeText(text);
+  const rawLines = normalized.split("\n");
+
+  const blocks: ScriptBlock[] = [];
+  let buffer: string[] = [];
+  let id = 0;
+
+  function flushBuffer() {
+    const clean = buffer.map((line) => line.trim()).filter(Boolean);
+    if (clean.length === 0) {
+      buffer = [];
+      return;
+    }
+
+    const speaker = clean.map(getSpeaker).find(Boolean);
+
+    blocks.push({
+      id: id++,
+      raw: clean.join("\n"),
+      lines: clean,
+      type: hasDialogue(clean) ? "content" : "cue",
+      speaker,
+      status: "none",
+      note: "",
+    });
+
+    buffer = [];
   }
+
+  for (const line of rawLines) {
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushBuffer();
+      continue;
+    }
+
+    if (isChapter(trimmed)) {
+      flushBuffer();
+
+      blocks.push({
+        id: id++,
+        raw: trimmed,
+        lines: [trimmed],
+        type: "chapter",
+        status: "none",
+        note: "",
+      });
+
+      continue;
+    }
+
+    if (isCueLine(trimmed)) {
+      if (buffer.length > 0 && hasDialogue(buffer)) {
+        flushBuffer();
+      }
+
+      buffer.push(trimmed);
+      continue;
+    }
+
+    buffer.push(trimmed);
+  }
+
+  flushBuffer();
+
+  return blocks;
+}
+
+function highlightLine(line: string) {
+  const trimmed = line.trim();
+
+  const commandMatch = trimmed.match(/^(se[+>|<]|bg[+>|<])\s*(.*)$/i);
+
+  if (commandMatch) {
+    const command = commandMatch[1];
+    const text = commandMatch[2];
+
+    return (
+      <>
+        <span className={`cue-tag ${command.startsWith("bg") ? "bg" : "se"}`}>
+          {command}
+        </span>
+        <span className="cue-text">{text}</span>
+      </>
+    );
+  }
+
+  if (isPauseLine(trimmed)) {
+    return <span className="pause-text">{trimmed}</span>;
+  }
+
+  if (/^（＊.*）$/.test(trimmed) || /^\(＊.*\)$/.test(trimmed)) {
+    return <span className="performance-text">{trimmed}</span>;
+  }
+
+  if (isBracketOnly(trimmed)) {
+    return <span className="hint-text">{trimmed}</span>;
+  }
+
+  const speaker = getSpeaker(trimmed);
+
+  if (speaker) {
+    const content = trimmed.replace(/^([^：:［\[\(（]{1,12})[：:]/, "");
+
+    return (
+      <>
+        <span className="speaker">{speaker}</span>
+        <span>{content}</span>
+      </>
+    );
+  }
+
+  return <span>{trimmed}</span>;
 }
 
 export default function App() {
-  const [lines, setLines] = useState<ScriptLine[]>([]);
+  const [blocks, setBlocks] = useState<ScriptBlock[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [viewMode, setViewMode] = useState<ViewMode>("full");
-  const [fontSize, setFontSize] = useState(30);
+  const [viewMode, setViewMode] = useState<ViewMode>("manuscript");
+  const [contextMode, setContextMode] = useState<ContextMode>("script");
+  const [selectedSpeaker, setSelectedSpeaker] = useState("全部角色");
+  const [fontSize, setFontSize] = useState(28);
   const [searchText, setSearchText] = useState("");
+  const [showToolbar, setShowToolbar] = useState(true);
+  const [highContrast, setHighContrast] = useState(false);
+  const [showRedoList, setShowRedoList] = useState(false);
 
-  const lineRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const blockRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  const speakers = useMemo(
+    () =>
+      Array.from(
+        new Set(blocks.map((block) => block.speaker).filter(Boolean))
+      ) as string[],
+    [blocks]
+  );
 
   const chapters = useMemo(
-    () => lines.map((line, index) => ({ line, index })).filter(({ line }) => line.type === "chapter"),
-    [lines]
-  );
-
-  const postLines = useMemo(
     () =>
-      lines
-        .map((line, index) => ({ line, index }))
-        .filter(({ line }) => line.type === "se" || line.type === "bg"),
-    [lines]
+      blocks
+        .map((block, index) => ({ block, index }))
+        .filter(({ block }) => block.type === "chapter"),
+    [blocks]
   );
 
-  const dialogueCount = lines.filter((line) => line.type === "dialogue").length;
-  const doneCount = lines.filter(
-    (line) =>
-      line.type === "dialogue" &&
-      (line.status === "done" || line.status === "verified")
+  const redoBlocks = blocks
+    .map((block, index) => ({ block, index }))
+    .filter(({ block }) => block.status === "redo");
+
+  const postBlocks = blocks
+    .map((block, index) => ({ block, index }))
+    .filter(({ block }) => block.lines.some(isCueLine));
+
+  const recordableBlocks = blocks.filter((block) => block.type === "content");
+
+  const doneCount = recordableBlocks.filter(
+    (block) => block.status === "done" || block.status === "verified"
   ).length;
+
+  const searchResults = blocks
+    .map((block, index) => ({ block, index }))
+    .filter(({ block }) =>
+      searchText.trim()
+        ? block.raw.toLowerCase().includes(searchText.toLowerCase())
+        : false
+    )
+    .slice(0, 40);
 
   async function importFile(file: File) {
     const fileName = file.name.toLowerCase();
@@ -206,13 +264,16 @@ export default function App() {
         const result = await mammoth.extractRawText({ arrayBuffer });
         text = result.value;
       } else {
-        alert("目前只支援 .txt 與 .docx 檔案");
+        alert("目前只支援 .txt 與 .docx 檔案。");
         return;
       }
 
       const parsed = parseScript(text);
-      setLines(parsed);
-      setCurrentIndex(parsed.findIndex((line) => line.type === "dialogue") || 0);
+      const firstContent = parsed.findIndex((block) => block.type === "content");
+
+      setBlocks(parsed);
+      setCurrentIndex(firstContent >= 0 ? firstContent : 0);
+      setSelectedSpeaker("全部角色");
       setSearchText("");
     } catch (error) {
       console.error(error);
@@ -220,53 +281,63 @@ export default function App() {
     }
   }
 
-  function findNextDialogue(start: number) {
-    for (let i = start + 1; i < lines.length; i++) {
-      if (lines[i].type === "dialogue") return i;
+  function isTargetBlock(block: ScriptBlock) {
+    if (block.type !== "content") return false;
+
+    if (selectedSpeaker === "全部角色") return true;
+
+    return block.speaker === selectedSpeaker;
+  }
+
+  function findNextTarget(start: number) {
+    for (let i = start + 1; i < blocks.length; i++) {
+      if (isTargetBlock(blocks[i])) return i;
     }
+
     return start;
   }
 
-  function findPrevDialogue(start: number) {
+  function findPrevTarget(start: number) {
     for (let i = start - 1; i >= 0; i--) {
-      if (lines[i].type === "dialogue") return i;
+      if (isTargetBlock(blocks[i])) return i;
     }
+
     return start;
   }
 
   function goNext() {
     setCurrentIndex((prev) =>
       viewMode === "recording"
-        ? findNextDialogue(prev)
-        : Math.min(prev + 1, lines.length - 1)
+        ? findNextTarget(prev)
+        : Math.min(prev + 1, blocks.length - 1)
     );
   }
 
   function goPrev() {
     setCurrentIndex((prev) =>
       viewMode === "recording"
-        ? findPrevDialogue(prev)
+        ? findPrevTarget(prev)
         : Math.max(prev - 1, 0)
     );
   }
 
   function markStatus(status: LineStatus) {
-    setLines((prev) =>
-      prev.map((line, index) =>
-        index === currentIndex ? { ...line, status } : line
+    setBlocks((prev) =>
+      prev.map((block, index) =>
+        index === currentIndex ? { ...block, status } : block
       )
     );
   }
 
   function updateNote(index: number, note: string) {
-    setLines((prev) =>
-      prev.map((line, i) => (i === index ? { ...line, note } : line))
+    setBlocks((prev) =>
+      prev.map((block, i) => (i === index ? { ...block, note } : block))
     );
   }
 
   function jumpTo(index: number) {
     setCurrentIndex(index);
-    setViewMode("full");
+    setViewMode("manuscript");
     setSearchText("");
   }
 
@@ -275,41 +346,163 @@ export default function App() {
   }
 
   function decreaseFontSize() {
-    setFontSize((prev) => Math.max(prev - 2, 20));
+    setFontSize((prev) => Math.max(prev - 2, 18));
   }
 
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen();
+    } else {
+      document.exitFullscreen();
+    }
+  }
+
+  function downloadText(filename: string, content: string) {
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+
+    a.href = url;
+    a.download = filename;
+    a.click();
+
+    URL.revokeObjectURL(url);
+  }
+
+  function exportRedoList() {
+    const content =
+      redoBlocks
+        .map(
+          ({ block, index }) =>
+            `${index + 1}. ${block.raw}${block.note ? `\n備註：${block.note}` : ""}`
+        )
+        .join("\n\n") || "目前沒有重錄內容。";
+
+    downloadText("重錄清單.txt", content);
+  }
+
+  function exportCueList() {
+    const content =
+      postBlocks
+        .map(({ block, index }) => `${index + 1}. ${block.raw}`)
+        .join("\n\n") || "目前沒有音效 cue。";
+
+    downloadText("後製Cue清單.txt", content);
+  }
+
+  function exportStatusList() {
+    const content =
+      blocks
+        .map(
+          (block, index) =>
+            `${index + 1}. [${statusLabel(block.status)}]\n${block.raw}${
+              block.note ? `\n備註：${block.note}` : ""
+            }`
+        )
+        .join("\n\n") || "目前沒有內容。";
+
+    downloadText("全部錄製狀態.txt", content);
+  }
+
+  function exportSpeakerLines() {
+    const target = selectedSpeaker;
+
+    const content =
+      blocks
+        .filter((block) =>
+          target === "全部角色" ? block.type === "content" : block.speaker === target
+        )
+        .map(
+          (block, index) =>
+            `${index + 1}. [${statusLabel(block.status)}]\n${block.raw}${
+              block.note ? `\n備註：${block.note}` : ""
+            }`
+        )
+        .join("\n\n") || "沒有可匯出的台詞。";
+
+    downloadText(`${target}-台詞表.txt`, content);
+  }
+
+  function getRecordingContext() {
+    if (contextMode === "speaker" && blocks[currentIndex]?.speaker) {
+      const speaker = blocks[currentIndex].speaker;
+      const sameSpeakerIndexes = blocks
+        .map((block, index) => ({ block, index }))
+        .filter(({ block }) => block.speaker === speaker);
+
+      const currentPosition = sameSpeakerIndexes.findIndex(
+        ({ index }) => index === currentIndex
+      );
+
+      return {
+        prev: currentPosition > 0 ? sameSpeakerIndexes[currentPosition - 1].block : undefined,
+        current: blocks[currentIndex],
+        next:
+          currentPosition < sameSpeakerIndexes.length - 1
+            ? sameSpeakerIndexes[currentPosition + 1].block
+            : undefined,
+      };
+    }
+
+    return {
+      prev: blocks[currentIndex - 1],
+      current: blocks[currentIndex],
+      next: blocks[currentIndex + 1],
+    };
+  }
+
+  const recordingContext = getRecordingContext();
+
   useEffect(() => {
-    const saved = localStorage.getItem("script-follow-recorder-audio-format");
+    const saved = localStorage.getItem("script-follow-recorder-v3");
 
     if (saved) {
       try {
         const data = JSON.parse(saved);
-        setLines(data.lines || []);
+
+        setBlocks(data.blocks || []);
         setCurrentIndex(data.currentIndex || 0);
-        setViewMode(data.viewMode || "full");
-        setFontSize(data.fontSize || 30);
+        setViewMode(data.viewMode || "manuscript");
+        setContextMode(data.contextMode || "script");
+        setSelectedSpeaker(data.selectedSpeaker || "全部角色");
+        setFontSize(data.fontSize || 28);
+        setShowToolbar(data.showToolbar ?? true);
+        setHighContrast(data.highContrast || false);
       } catch {
-        localStorage.removeItem("script-follow-recorder-audio-format");
+        localStorage.removeItem("script-follow-recorder-v3");
       }
     }
   }, []);
 
   useEffect(() => {
     localStorage.setItem(
-      "script-follow-recorder-audio-format",
+      "script-follow-recorder-v3",
       JSON.stringify({
-        lines,
+        blocks,
         currentIndex,
         viewMode,
+        contextMode,
+        selectedSpeaker,
         fontSize,
+        showToolbar,
+        highContrast,
       })
     );
-  }, [lines, currentIndex, viewMode, fontSize]);
+  }, [
+    blocks,
+    currentIndex,
+    viewMode,
+    contextMode,
+    selectedSpeaker,
+    fontSize,
+    showToolbar,
+    highContrast,
+  ]);
 
   useEffect(() => {
-    if (viewMode !== "full") return;
+    if (viewMode !== "manuscript") return;
 
-    const el = lineRefs.current[currentIndex];
+    const el = blockRefs.current[currentIndex];
 
     if (el) {
       el.scrollIntoView({
@@ -358,12 +551,17 @@ export default function App() {
 
       if (e.key.toLowerCase() === "m") {
         e.preventDefault();
-        setViewMode((prev) => (prev === "recording" ? "full" : "recording"));
+        setViewMode((prev) => (prev === "recording" ? "manuscript" : "recording"));
       }
 
       if (e.key.toLowerCase() === "p") {
         e.preventDefault();
-        setViewMode((prev) => (prev === "post" ? "full" : "post"));
+        setViewMode((prev) => (prev === "post" ? "manuscript" : "post"));
+      }
+
+      if (e.key.toLowerCase() === "h") {
+        e.preventDefault();
+        setShowToolbar((prev) => !prev);
       }
 
       if (e.key === "-") {
@@ -378,88 +576,171 @@ export default function App() {
     }
 
     window.addEventListener("keydown", handleKeyDown);
+
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [lines, currentIndex, viewMode]);
+  }, [blocks, currentIndex, viewMode, selectedSpeaker]);
 
-  const currentLine = lines[currentIndex];
-  const previousContext = lines.slice(Math.max(0, currentIndex - 3), currentIndex);
-  const nextContext = lines.slice(currentIndex + 1, currentIndex + 4);
+  function renderBlockLines(block: ScriptBlock) {
+    return block.lines.map((line, index) => (
+      <div
+        key={`${block.id}-${index}`}
+        className={[
+          "script-line",
+          isCueLine(line) ? "cue-line" : "",
+          isPauseLine(line) ? "pause-line" : "",
+          isBracketOnly(line) ? "hint-line" : "",
+        ].join(" ")}
+      >
+        {highlightLine(line)}
+      </div>
+    ));
+  }
 
-  const searchResults = lines
-    .map((line, index) => ({ line, index }))
-    .filter(({ line }) =>
-      searchText.trim()
-        ? line.raw.toLowerCase().includes(searchText.toLowerCase())
-        : false
-    )
-    .slice(0, 30);
+  function renderRecordingCard(block: ScriptBlock | undefined, role: "prev" | "current" | "next") {
+    if (!block) {
+      return <div className={`record-card ${role} empty-card`}>沒有內容</div>;
+    }
+
+    return (
+      <div className={`record-card ${role} ${block.status}`}>
+        {renderBlockLines(block)}
+        {block.note && <div className="record-note">備註：{block.note}</div>}
+      </div>
+    );
+  }
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <h1>錄音劇本跟讀器：音聲格式版</h1>
+    <div className={["app", highContrast ? "high-contrast" : ""].join(" ")}>
+      {showToolbar && (
+        <>
+          <header className="topbar">
+            <div>
+              <h1>錄音劇本跟讀器 v3</h1>
+              <p>原稿保留版 / 音聲工作流</p>
+            </div>
 
-        <input
-          type="file"
-          accept=".txt,.docx"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) importFile(file);
-          }}
-        />
-      </header>
+            <input
+              type="file"
+              accept=".txt,.docx"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) importFile(file);
+              }}
+            />
+          </header>
 
-      <div className="toolbar">
-        <button onClick={() => setViewMode("full")}>完整模式</button>
-        <button onClick={() => setViewMode("recording")}>錄音模式</button>
-        <button onClick={() => setViewMode("post")}>後製模式</button>
-        <button onClick={decreaseFontSize}>A-</button>
-        <button onClick={increaseFontSize}>A+</button>
+          <div className="toolbar">
+            <button onClick={() => setViewMode("manuscript")}>原稿模式</button>
+            <button onClick={() => setViewMode("recording")}>錄音模式</button>
+            <button onClick={() => setViewMode("post")}>後製模式</button>
 
-        <select
-          value=""
-          onChange={(e) => {
-            if (e.target.value) jumpTo(Number(e.target.value));
-          }}
-        >
-          <option value="">章節跳轉</option>
-          {chapters.map(({ line, index }) => (
-            <option key={line.id} value={index}>
-              {line.text}
-            </option>
-          ))}
-        </select>
+            <label>角色</label>
+            <select
+              value={selectedSpeaker}
+              onChange={(e) => setSelectedSpeaker(e.target.value)}
+            >
+              <option value="全部角色">全部角色</option>
+              {speakers.map((speaker) => (
+                <option key={speaker} value={speaker}>
+                  {speaker}
+                </option>
+              ))}
+            </select>
 
-        <input
-          className="search"
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-          placeholder="搜尋台詞 / 音效 / 章節"
-        />
-      </div>
+            <button
+              onClick={() =>
+                setContextMode((prev) => (prev === "script" ? "speaker" : "script"))
+              }
+            >
+              {contextMode === "script" ? "前後文模式" : "同角色模式"}
+            </button>
 
-      <div className="privacy-notice">
-        <strong>隱私說明：</strong>
-        本工具不會上傳劇本文本。所有劇本、錄製狀態與備註僅儲存在您的瀏覽器本機。
-        <br />
-        <strong>提醒：</strong>
-        若清除瀏覽器資料、使用無痕模式或更換裝置，進度可能消失，請自行保留原始劇本備份。
-      </div>
+            <button onClick={decreaseFontSize}>A-</button>
+            <button onClick={increaseFontSize}>A+</button>
+            <button onClick={() => setHighContrast((prev) => !prev)}>高對比</button>
+            <button onClick={toggleFullscreen}>全螢幕</button>
+            <button onClick={() => setShowToolbar(false)}>隱藏工具列</button>
+          </div>
 
-      <div className="help">
-        進度：{doneCount} / {dialogueCount}　Enter/↓：下一項　↑：上一項　F：已錄　R：重錄　V：已確認　X：棄用　C：清除　M：錄音模式　P：後製模式
-      </div>
+          <div className="toolbar secondary">
+            <select
+              value=""
+              onChange={(e) => {
+                if (e.target.value) jumpTo(Number(e.target.value));
+              }}
+            >
+              <option value="">章節跳轉</option>
+              {chapters.map(({ block, index }) => (
+                <option key={block.id} value={index}>
+                  {block.raw}
+                </option>
+              ))}
+            </select>
 
-      {searchText && (
+            <input
+              className="search"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              placeholder="搜尋台詞 / 音效 / 章節"
+            />
+
+            <button onClick={() => setShowRedoList((prev) => !prev)}>
+              {showRedoList ? "關閉重錄清單" : "重錄清單"}
+            </button>
+            <button onClick={exportRedoList}>匯出重錄</button>
+            <button onClick={exportSpeakerLines}>匯出角色台詞</button>
+            <button onClick={exportCueList}>匯出 Cue</button>
+            <button onClick={exportStatusList}>匯出全部狀態</button>
+          </div>
+
+          <div className="stats">
+            <strong>錄製進度：</strong>
+            {doneCount} / {recordableBlocks.length}
+            <span>目前模式：{viewMode}</span>
+          </div>
+
+          <div className="privacy-notice">
+            <strong>隱私說明：</strong>
+            本工具不會上傳劇本文本。所有劇本、錄製狀態與備註僅儲存在您的瀏覽器本機。
+            <br />
+            <strong>提醒：</strong>
+            若清除瀏覽器資料、使用無痕模式或更換裝置，進度可能消失，請自行保留原始劇本備份。
+          </div>
+
+          <div className="help">
+            Enter/↓：下一項　↑：上一項　F：已錄　R：重錄　V：已確認　X：棄用　C：清除　M：錄音模式　P：後製模式　H：隱藏工具列
+          </div>
+        </>
+      )}
+
+      {!showToolbar && (
+        <button className="floating-button" onClick={() => setShowToolbar(true)}>
+          顯示工具列
+        </button>
+      )}
+
+      {showRedoList && showToolbar && (
         <aside className="side-panel">
+          <h2>重錄清單</h2>
+          {redoBlocks.length === 0 && <p>目前沒有標記重錄的內容。</p>}
+          {redoBlocks.map(({ block, index }) => (
+            <div key={block.id} className="side-item" onClick={() => jumpTo(index)}>
+              <strong>{index + 1}</strong>
+              <p>{block.raw}</p>
+              {block.note && <small>備註：{block.note}</small>}
+            </div>
+          ))}
+        </aside>
+      )}
+
+      {searchText.trim() && showToolbar && (
+        <aside className="search-panel">
           <h2>搜尋結果</h2>
           {searchResults.length === 0 && <p>沒有找到結果。</p>}
-          {searchResults.map(({ line, index }) => (
-            <div key={line.id} className="side-item" onClick={() => jumpTo(index)}>
-              <strong>
-                {index + 1}. {typeLabel(line.type)}
-              </strong>
-              <p>{line.raw}</p>
+          {searchResults.map(({ block, index }) => (
+            <div key={block.id} className="side-item" onClick={() => jumpTo(index)}>
+              <strong>{index + 1}</strong>
+              <p>{block.raw}</p>
             </div>
           ))}
         </aside>
@@ -467,88 +748,61 @@ export default function App() {
 
       {viewMode === "recording" && (
         <main className="recording-view" style={{ fontSize }}>
-          <section className="context-block">
-            {previousContext.map((line) => (
-              <div key={line.id} className={`context-line ${line.type}`}>
-                <span className="type-badge">{typeLabel(line.type)}</span>
-                {line.command && <span className="command">{line.command}</span>}
-                {line.raw}
-              </div>
-            ))}
-          </section>
-
-          {currentLine ? (
-            <section className={`record-current ${currentLine.type} ${currentLine.status}`}>
-              <div className="record-meta">
-                <span>{typeLabel(currentLine.type)}</span>
-                <span>{statusLabel(currentLine.status)}</span>
-              </div>
-              <div>{currentLine.text}</div>
-            </section>
-          ) : (
-            <div className="empty">請先匯入 .txt 或 .docx 劇本</div>
-          )}
-
-          <section className="context-block">
-            {nextContext.map((line) => (
-              <div key={line.id} className={`context-line ${line.type}`}>
-                <span className="type-badge">{typeLabel(line.type)}</span>
-                {line.command && <span className="command">{line.command}</span>}
-                {line.raw}
-              </div>
-            ))}
-          </section>
+          {renderRecordingCard(recordingContext.prev, "prev")}
+          {renderRecordingCard(recordingContext.current, "current")}
+          {renderRecordingCard(recordingContext.next, "next")}
         </main>
       )}
 
       {viewMode === "post" && (
-        <main className="script">
-          {postLines.map(({ line, index }) => (
-            <div key={line.id} className={`line ${line.type}`} onClick={() => jumpTo(index)}>
-              <div className="line-main">
-                <span className="type-badge">{typeLabel(line.type)}</span>
-                {line.command && <span className="command">{line.command}</span>}
-                <span>{line.text}</span>
-              </div>
+        <main className="post-view">
+          {postBlocks.length === 0 && <div className="empty">目前沒有偵測到 se/bg cue。</div>}
+          {postBlocks.map(({ block, index }) => (
+            <div key={block.id} className="post-item" onClick={() => jumpTo(index)}>
+              <span className="post-index">{index + 1}</span>
+              <div>{renderBlockLines(block)}</div>
             </div>
           ))}
         </main>
       )}
 
-      {viewMode === "full" && (
-        <main className="script">
-          {lines.length === 0 && <div className="empty">請先匯入 .txt 或 .docx 劇本</div>}
+      {viewMode === "manuscript" && (
+        <main className="manuscript">
+          {blocks.length === 0 && <div className="empty">請先匯入 .txt 或 .docx 劇本</div>}
 
-          {lines.map((line, index) => (
+          {blocks.map((block, index) => (
             <div
-              key={line.id}
+              key={block.id}
               ref={(el) => {
-                lineRefs.current[index] = el;
+                blockRefs.current[index] = el;
               }}
               style={{ fontSize }}
               className={[
-                "line",
-                line.type,
-                line.status,
+                "block",
+                block.type,
+                block.status,
                 index === currentIndex ? "current" : "",
+                selectedSpeaker !== "全部角色" &&
+                block.speaker !== selectedSpeaker &&
+                block.type === "content"
+                  ? "dimmed"
+                  : "",
               ].join(" ")}
               onClick={() => setCurrentIndex(index)}
             >
-              <div className="line-main">
-                <span className="type-badge">{typeLabel(line.type)}</span>
-                {line.command && <span className="command">{line.command}</span>}
-                <span>{line.text}</span>
-              </div>
+              <div className="block-content">{renderBlockLines(block)}</div>
 
-              <div className="line-meta">
-                <span>{statusLabel(line.status)}</span>
-                <input
-                  value={line.note}
-                  placeholder="備註"
-                  onChange={(e) => updateNote(index, e.target.value)}
-                  onClick={(e) => e.stopPropagation()}
-                />
-              </div>
+              {block.type === "content" && (
+                <div className="block-meta">
+                  <span>{statusLabel(block.status)}</span>
+                  <input
+                    value={block.note}
+                    placeholder="備註 / 補錄原因"
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => updateNote(index, e.target.value)}
+                  />
+                </div>
+              )}
             </div>
           ))}
         </main>
