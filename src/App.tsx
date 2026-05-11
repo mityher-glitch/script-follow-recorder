@@ -34,20 +34,7 @@ function parseScript(text: string): ScriptLine[] {
     });
 }
 
-function statusLabel(status: LineStatus) {
-  switch (status) {
-    case "done":
-      return "已錄";
-    case "redo":
-      return "重錄";
-    case "verified":
-      return "已確認";
-    case "skipped":
-      return "棄用";
-    default:
-      return "未標記";
-  }
-}
+
 
 export default function App() {
   const [lines, setLines] = useState<ScriptLine[]>([]);
